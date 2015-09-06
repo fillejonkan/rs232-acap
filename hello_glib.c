@@ -29,141 +29,156 @@
 
 static int fd = -1;
 
-void update_dynamic_overlay(char *s)
+#define OVERLAY_BUF_SIZE (32)
+#define OVERLAY_STR_SIZE (OVERLAY_BUF_SIZE -1)
+
+/*********************** INTERNAL FUNCTION DECLARATIONS ***********************/
+
+/*
+ * Update dynamic overlay with input string. Max string length 31 characters
+ * plus NUL character. Uses statuscache library.
+ */
+static void update_dynamic_overlay(char *s);
+
+/*
+ * Open serial TTY port
+ */
+static int open_serial_tty();
+
+/*
+ * Configure serial TTY port using termios API.
+ */
+static int configure_serial_tty();
+
+/*
+ * Test function that writes to serial TTY port
+ */
+#if 0
+static void write_serial_tty();
+#endif
+
+/*
+ * Read from serial port (max OVERLAY_STR_SIZE char)
+ * and output to dynamic overlay
+ */
+static gboolean echo_serial_tty(gpointer user_data);
+
+
+/*********************** INTERNAL FUNCTION DEFINITIONS ************************/
+
+static void update_dynamic_overlay(char *s)
 {
-  /* Ignore return value if group is already created */
-  sc_create_group("DYNAMIC_TEXT_IS1", 512, 0);
+    if (strlen(s) > OVERLAY_STR_SIZE) {
+        g_message("Overlay string to large %d > %d", strlen(s),
+            OVERLAY_STR_SIZE);
+        return;
+    } 
 
-  struct sc_param sc_par = {.name="DYNAMIC_TEXT", .size=32, .data=s, .type=SC_STRING};
-  struct sc_param *arr[2] = {&sc_par, 0};
+    /* Ignore return value if group is already created */
+    sc_create_group("DYNAMIC_TEXT_IS1", 512, 0);
 
-  sc_set_group("DYNAMIC_TEXT_IS1", arr, SC_CREATE);
+    struct sc_param sc_par = { .name="DYNAMIC_TEXT", 
+                               .size=OVERLAY_BUF_SIZE,
+                               .data=s,
+                               .type=SC_STRING};
+
+    /* NULL-terminated list of pointers to param structs. we need just one */
+    struct sc_param *arr[2] = {&sc_par, 0};
+
+    sc_set_group("DYNAMIC_TEXT_IS1", arr, SC_CREATE);
 }
 
 /* open serial port for read and write */
-int open_serial_tty()
+static int open_serial_tty()
 {
-  fd = open("/dev/ttyS1", O_RDWR | O_NOCTTY | O_NDELAY);
+    fd = open("/dev/ttyS1", O_RDWR | O_NOCTTY | O_NDELAY);
 
-  if (fd < 0) {
-    perror("failed to open serial port");
-  } else {
-    g_message("%s() [%s:%d] - Opended serial port fd=%d",
-            __FUNCTION__, __FILE__, __LINE__, fd);
-  }
+    if (fd < 0) {
+        perror("failed to open serial port");
+    } else {
+        g_message("%s() [%s:%d] - Opened serial port fd=%d",
+                        __FUNCTION__, __FILE__, __LINE__, fd);
+    }
 
-  return fd;
+    return fd;
 }
 
 /* Configure serial port */
-int configure_serial_tty()
+static int configure_serial_tty()
 {
-  struct termios ts = {0,};
+    struct termios ts = {0,};
 
-  if (tcgetattr(fd, &ts)) {
-    perror("Failed to get serial port settings!");
-    g_assert(0);
-  }
+    if (tcgetattr(fd, &ts)) {
+        perror("Failed to get serial port settings!");
+        g_assert(0);
+    }
 
-  cfsetispeed(&ts, B300);
-  cfsetospeed(&ts, B300);
+    /* Set input and output baud rate to 300, hardcoded for now */
+    cfsetispeed(&ts, B300);
+    cfsetospeed(&ts, B300);
 
-  /* Only local ownership of port, allow read and one extra stop bit (2) */
-  ts.c_cflag |= (CLOCAL | CREAD | CSTOPB);
+    /* Only local ownership of port, allow read and one extra stop bit (2) */
+    ts.c_cflag |= (CLOCAL | CREAD | CSTOPB);
 
-  /* Set 8 bit data size */
-  ts.c_cflag &= ~CSIZE; /* Mask the character size bits */
-  ts.c_cflag |= CS8;    /* Select 8 data bits */
+    /* Set 8 bit data size */
+    ts.c_cflag &= ~CSIZE; /* Mask the character size bits */
+    ts.c_cflag |= CS8;    /* Select 8 data bits */
 
-  /* Make raw */
-  ts.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+    /* Make raw */
+    ts.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
 
-  /* Raw output, no post processing of data */
-  ts.c_oflag &= ~OPOST;
+    /* Raw output, no post processing of data */
+    ts.c_oflag &= ~OPOST;
 
-  if (tcsetattr(fd, TCSANOW, &ts)) {
-    perror("Failed to configure TTY terminal");
-    g_assert(0);
-  }
+    /* Physically commit changes to serial port immediately */
+    if (tcsetattr(fd, TCSANOW, &ts)) {
+        perror("Failed to configure TTY terminal");
+        g_assert(0);
+    }
 
-  return 0;
+    return 0;
 }
 
-/*
- * This function will be called when our CGI is accessed.
- */
-static void
-request_handler(const gchar *path,
-    const gchar *method,
-    const gchar *query,
-    GHashTable *params,
-    GOutputStream *output_stream,
-    gpointer user_data)
+#if 0
+static void write_serial_tty()
 {
-  GDataOutputStream *dos;
-  guint *timer = (guint*) user_data;
-  gchar msg[128];
-
-  dos = g_data_output_stream_new(output_stream);
-
-  /* Send out the HTTP response status code */
-  g_data_output_stream_put_string(dos,"Content-Type: text/plain\r\n", NULL, NULL);
-  g_data_output_stream_put_string(dos,"Status: 200 OK\r\n\r\n", NULL, NULL);
-
-  /* Our custom message */
-  g_snprintf(msg, sizeof(msg),"You have accessed '%s'\n", path ? path:"(NULL)");
-  g_data_output_stream_put_string(dos, msg, NULL, NULL);
-
-  g_snprintf(msg, sizeof(msg), "\n%s() [%s:%d] \n\n"
-                               "-  Hello World! -\n"
-                               "I've been running for %d seconds\n",
-                               __FUNCTION__, __FILE__, __LINE__, *timer );
-  g_data_output_stream_put_string(dos, msg, NULL, NULL);
-
-  g_object_unref(dos);
+    int n = write(fd, "HEJ\r", 4);
+    if (n < 0)
+        fputs("write() of 4 bytes failed!\n", stderr);
 }
+#endif
 
-void write_serial_tty()
+static gboolean echo_serial_tty(gpointer user_data)
 {
-  int n = write(fd, "HEJ\r", 4);
-  if (n < 0)
-    fputs("write() of 4 bytes failed!\n", stderr);
-}
+    int tot_read = 0;
+    int stop = 0;
+    char buf[OVERLAY_BUF_SIZE];
 
-gboolean echo_serial_tty(gpointer user_data)
-{
-  int tot_read = 0;
-  int buf_size = 32;
-  int stop = 0;
-  char buf[32];
-
-  /* Read lines or 32 input characters from tty and print */
-  //while (1) {
+    /* Read lines or input characters from tty and print */
     g_message("Wating for serial input");
     
-    /* reset state */
+    /* reset state and ensure zero termination */
     memset(buf, 0, sizeof(buf));
     tot_read = 0;
     stop = 0;
 
-    while (tot_read < buf_size && !stop) {
-      int r = read(fd, &buf[tot_read], 32 - tot_read);
-      if (r > 0) {
-        tot_read += r;
-        g_message("read %d (%d) chars", r, tot_read);
-      }
-      /* Stop on new line from echo */
-      if (strstr(buf, "\n") != NULL) {
-        stop = 1;
-      }
+    while (tot_read < (OVERLAY_STR_SIZE) && !stop) {
+        int r = read(fd, &buf[tot_read], OVERLAY_STR_SIZE - tot_read);
+        if (r > 0) {
+            tot_read += r;
+            g_message("read %d (%d) chars", r, tot_read);
+        }
+        /* Stop on new line from echo */
+        if (strstr(buf, "\n") != NULL) {
+            stop = 1;
+            /* replace newline with zero termination */
+            buf[tot_read - 1] = '\0';
+        }
     }
     g_message("Got serial string: %s", buf);
-    /* DIRTY zero terminate string without trailing newline */
-    buf[tot_read - 1] = '\0';
-    update_dynamic_overlay(buf);
-  //}
+        update_dynamic_overlay(buf);
 
-  return TRUE;
+    return TRUE;
 }
 
 /*
@@ -173,17 +188,51 @@ gboolean echo_serial_tty(gpointer user_data)
 static gboolean
 on_timeout(gpointer data)
 {
-  guint *timer = (guint*) data;
+    guint *timer = (guint*) data;
 
-  (*timer)++; /* increase the timer */
+    (*timer)++; /* increase the timer */
 
-  g_message("%s() [%s:%d] - this app has been running for %d secs.",
-            __FUNCTION__, __FILE__, __LINE__, *timer);
-  //write_serial_tty();
+    g_message("%s() [%s:%d] - this app has been running for %d secs.",
+                        __FUNCTION__, __FILE__, __LINE__, *timer);
+    //write_serial_tty();
 
-  return TRUE; /* FALSE removes the event source */
+    return TRUE; /* FALSE removes the event source */
 }
 #endif
+
+/*
+ * This function will be called when our CGI is accessed.
+ */
+static void
+request_handler(const gchar *path,
+        const gchar *method,
+        const gchar *query,
+        GHashTable *params,
+        GOutputStream *output_stream,
+        gpointer user_data)
+{
+    GDataOutputStream *dos;
+    guint *timer = (guint*) user_data;
+    gchar msg[128];
+
+    dos = g_data_output_stream_new(output_stream);
+
+    /* Send out the HTTP response status code */
+    g_data_output_stream_put_string(dos,"Content-Type: text/plain\r\n", NULL, NULL);
+    g_data_output_stream_put_string(dos,"Status: 200 OK\r\n\r\n", NULL, NULL);
+
+    /* Our custom message */
+    g_snprintf(msg, sizeof(msg),"You have accessed '%s'\n", path ? path:"(NULL)");
+    g_data_output_stream_put_string(dos, msg, NULL, NULL);
+
+    g_snprintf(msg, sizeof(msg), "\n%s() [%s:%d] \n\n"
+                                                             "-  Hello World! -\n"
+                                                             "I've been running for %d seconds\n",
+                                                             __FUNCTION__, __FILE__, __LINE__, *timer );
+    g_data_output_stream_put_string(dos, msg, NULL, NULL);
+
+    g_object_unref(dos);
+}
 
 /*
  * Our main function
@@ -191,33 +240,33 @@ on_timeout(gpointer data)
 int
 main(void)
 {
-  GMainLoop *loop;
-  AXHttpHandler *handler;
-  guint timer = 0;
+    GMainLoop *loop;
+    AXHttpHandler *handler;
+    guint timer = 0;
 
-  loop    = g_main_loop_new(NULL, FALSE);
-  handler = ax_http_handler_new(request_handler, &timer);
+    loop    = g_main_loop_new(NULL, FALSE);
+    handler = ax_http_handler_new(request_handler, &timer);
 
-  g_message("Created a HTTP handler: %p", handler); 
+    g_message("Created a HTTP handler: %p", handler); 
 
-  //update_dynamic_overlay("Initial");
+    //update_dynamic_overlay("Initial");
 
-  (void) open_serial_tty();
-  (void) configure_serial_tty();
+    (void) open_serial_tty();
+    (void) configure_serial_tty();
 
-  /* Periodically call 'on_timeout()' every second */
-  g_idle_add(echo_serial_tty, NULL);
-  //g_timeout_add(1000, on_timeout, &timer);
+    /* Periodically call 'on_timeout()' every second */
+    g_idle_add(echo_serial_tty, NULL);
+    //g_timeout_add(1000, on_timeout, &timer);
 
-  //echo_serial_tty();
-  /* start the main loop */
-  g_main_loop_run(loop);
+    //echo_serial_tty();
+    /* start the main loop */
+    g_main_loop_run(loop);
 
-  /* free up resources */
-  close(fd);
-  g_main_loop_unref(loop);
-  ax_http_handler_free(handler);
+    /* free up resources */
+    close(fd);
+    g_main_loop_unref(loop);
+    ax_http_handler_free(handler);
 
-  return 0;
+    return 0;
 }
 
