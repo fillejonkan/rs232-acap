@@ -27,8 +27,6 @@
 
 #include <statuscache.h>
 
-static int fd = -1;
-
 #define OVERLAY_BUF_SIZE (32)
 #define OVERLAY_STR_SIZE (OVERLAY_BUF_SIZE -1)
 
@@ -48,7 +46,7 @@ static int open_serial_tty();
 /*
  * Configure serial TTY port using termios API.
  */
-static int configure_serial_tty();
+static void configure_serial_tty(int fd);
 
 /*
  * Test function that writes to serial TTY port
@@ -91,10 +89,11 @@ static void update_dynamic_overlay(char *s)
 /* open serial port for read and write */
 static int open_serial_tty()
 {
-    fd = open("/dev/ttyS1", O_RDWR | O_NOCTTY | O_NDELAY);
+    int fd = open("/dev/ttyS1", O_RDWR | O_NOCTTY | O_NDELAY);
 
     if (fd < 0) {
         perror("failed to open serial port");
+        g_assert(0);
     } else {
         g_message("%s() [%s:%d] - Opened serial port fd=%d",
                         __FUNCTION__, __FILE__, __LINE__, fd);
@@ -104,7 +103,7 @@ static int open_serial_tty()
 }
 
 /* Configure serial port */
-static int configure_serial_tty()
+static void configure_serial_tty(int fd)
 {
     struct termios ts = {0,};
 
@@ -135,8 +134,6 @@ static int configure_serial_tty()
         perror("Failed to configure TTY terminal");
         g_assert(0);
     }
-
-    return 0;
 }
 
 #if 0
@@ -153,9 +150,10 @@ static gboolean echo_serial_tty(gpointer user_data)
     int tot_read = 0;
     int stop = 0;
     char buf[OVERLAY_BUF_SIZE];
+    int fd = *((int *) user_data);
 
     /* Read lines or input characters from tty and print */
-    g_message("Wating for serial input");
+    g_message("Wating for serial input (fd=%d)", fd);
     
     /* reset state and ensure zero termination */
     memset(buf, 0, sizeof(buf));
@@ -251,11 +249,11 @@ main(void)
 
     //update_dynamic_overlay("Initial");
 
-    (void) open_serial_tty();
-    (void) configure_serial_tty();
+    int fd = open_serial_tty();
+    configure_serial_tty(fd);
 
     /* Periodically call 'on_timeout()' every second */
-    g_idle_add(echo_serial_tty, NULL);
+    g_idle_add(echo_serial_tty, &fd);
     //g_timeout_add(1000, on_timeout, &timer);
 
     //echo_serial_tty();
