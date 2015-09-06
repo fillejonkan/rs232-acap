@@ -2,8 +2,8 @@ AXIS_USABLE_LIBS = UCLIBC GLIBC
 include $(AXIS_TOP_DIR)/tools/build/rules/common.mak
 
 
-PROG1	= hello_glib
-OBJS1	= hello_glib.c
+PROG1	= rs232
+OBJS1	= rs232.c
 
 PROGS	= $(PROG1)
 
