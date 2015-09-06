@@ -29,7 +29,7 @@
 
 static int fd = -1;
 
-void update_dynamic_overlay(const char *s)
+void update_dynamic_overlay(char *s)
 {
   /* Ignore return value if group is already created */
   sc_create_group("DYNAMIC_TEXT_IS1", 512, 0);
@@ -68,6 +68,7 @@ int configure_serial_tty()
   cfsetispeed(&ts, B300);
   cfsetospeed(&ts, B300);
 
+  /* Only local ownership of port, allow read and one extra stop bit (2) */
   ts.c_cflag |= (CLOCAL | CREAD | CSTOPB);
 
   /* Set 8 bit data size */
@@ -76,6 +77,9 @@ int configure_serial_tty()
 
   /* Make raw */
   ts.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+
+  /* Raw output, no post processing of data */
+  ts.c_oflag &= ~OPOST;
 
   if (tcsetattr(fd, TCSANOW, &ts)) {
     perror("Failed to configure TTY terminal");
@@ -149,13 +153,13 @@ gboolean echo_serial_tty(gpointer user_data)
         g_message("read %d (%d) chars", r, tot_read);
       }
       /* Stop on new line from echo */
-      if (strstr(buf, "\n\n") != NULL) {
+      if (strstr(buf, "\n") != NULL) {
         stop = 1;
       }
     }
     g_message("Got serial string: %s", buf);
     /* DIRTY zero terminate string without trailing newline */
-    buf[tot_read - 2] = '\0';
+    buf[tot_read - 1] = '\0';
     update_dynamic_overlay(buf);
   //}
 
