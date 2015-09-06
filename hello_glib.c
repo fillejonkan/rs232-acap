@@ -25,7 +25,20 @@
 #include <errno.h>
 #include <fcntl.h>
 
+#include <statuscache.h>
+
 static int fd = -1;
+
+void update_dynamic_overlay(const char *s)
+{
+  /* Ignore return value if group is already created */
+  sc_create_group("DYNAMIC_TEXT_IS1", 512, 0);
+
+  struct sc_param sc_par = {.name="DYNAMIC_TEXT", .size=32, .data=s, .type=SC_STRING};
+  struct sc_param *arr[2] = {&sc_par, 0};
+
+  sc_set_group("DYNAMIC_TEXT_IS1", arr, SC_CREATE);
+}
 
 /* open serial port for read and write */
 int open_serial_tty()
@@ -141,6 +154,9 @@ gboolean echo_serial_tty(gpointer user_data)
       }
     }
     g_message("Got serial string: %s", buf);
+    /* DIRTY zero terminate string without trailing newline */
+    buf[tot_read - 2] = '\0';
+    update_dynamic_overlay(buf);
   //}
 
   return TRUE;
@@ -178,7 +194,9 @@ main(void)
   loop    = g_main_loop_new(NULL, FALSE);
   handler = ax_http_handler_new(request_handler, &timer);
 
-  g_message("Created a HTTP handler: %p", handler);
+  g_message("Created a HTTP handler: %p", handler); 
+
+  //update_dynamic_overlay("Initial");
 
   (void) open_serial_tty();
   (void) configure_serial_tty();
