@@ -42,17 +42,23 @@ static int open_serial_tty();
 static void configure_serial_tty(int fd);
 
 /*
- * Test function that writes to serial TTY port
- */
-#if 0
-static void write_serial_tty();
-#endif
-
-/*
  * Read from serial port (max OVERLAY_STR_SIZE char)
  * and output to dynamic overlay
  */
 static gboolean echo_serial_tty(gpointer user_data);
+
+/*
+ *
+ * Read humidity data from lily temperature sensor using MODBUS protocol.
+ */
+static float lily_read_humidity_data(int fd);
+
+/*
+ *
+ * Timer function used to poll humidity / temperature data
+ */
+static gboolean
+on_timeout(gpointer user_data);
 
 
 /*********************** INTERNAL FUNCTION DEFINITIONS ************************/
@@ -106,11 +112,12 @@ static void configure_serial_tty(int fd)
     }
 
     /* Set input and output baud rate to 300, hardcoded for now */
-    cfsetispeed(&ts, B300);
-    cfsetospeed(&ts, B300);
+    cfsetispeed(&ts, B9600);
+    cfsetospeed(&ts, B9600);
 
     /* Only local ownership of port, allow read and one extra stop bit (2) */
-    ts.c_cflag |= (CLOCAL | CREAD | CSTOPB);
+    ts.c_cflag |= (CLOCAL | CREAD);
+    ts.c_cflag &= ~(CSTOPB | PARENB);
 
     /* Set 8 bit data size */
     ts.c_cflag &= ~CSIZE; /* Mask the character size bits */
@@ -129,14 +136,55 @@ static void configure_serial_tty(int fd)
     }
 }
 
-#if 0
-static void write_serial_tty()
+
+static float lily_read_humidity_data(int fd)
 {
-    int n = write(fd, "HEJ\r", 4);
+    unsigned char cmd_buf[8];
+
+    /* Fill command buffer according to data sheet */
+    cmd_buf[0] = 0x11;
+    cmd_buf[1] = 0x04;
+    cmd_buf[2] = 0x00;
+    cmd_buf[3] = 0x00;
+    cmd_buf[4] = 0x00;
+    cmd_buf[5] = 0x01;
+    cmd_buf[6] = 0x33;
+    cmd_buf[7] = 0x5A;
+
+    int n = write(fd, cmd_buf, sizeof(cmd_buf));
     if (n < 0)
-        fputs("write() of 4 bytes failed!\n", stderr);
+        fputs("write() of 8 bytes failed!\n", stderr);
+    else {
+        g_message("Successfully wrote %d characters", n);
+    }
+
+    /* Now read the response */
+    int tot_read = 0;
+    unsigned char resp_buf[6] = {0,};
+
+    /* 7 according to data sheet but seems like device ID is not output */
+
+    while (tot_read < 6) {
+        int r = read(fd, &resp_buf[tot_read], 7 - tot_read);
+        if (r > 0) {
+            tot_read += r;
+            g_message("read %d (%d) chars", r, tot_read);
+        }
+    }
+
+    g_message("Got bytes 0=0x%02x 1=0x%02x 2=0x%02x, 3=0x%02x 4=0x%02x 5=0x%02x", resp_buf[0], resp_buf[1],resp_buf[2],resp_buf[3],resp_buf[4],resp_buf[5]);
+
+    unsigned int humidity = (resp_buf[2] << 8) | resp_buf[3];
+    float hum_f = humidity / 10.0;
+    g_message("Got humidity 0x%04x=%2.1f%%", humidity, hum_f);
+
+    /* Finally update the dynamic overlay with the humidity data */
+    char str[6];
+    g_snprintf(str, sizeof(str), "%2.1f%%", hum_f);
+    update_dynamic_overlay(str);
+
+    return 0;
 }
-#endif
 
 static gboolean echo_serial_tty(gpointer user_data)
 {
@@ -175,21 +223,15 @@ static gboolean echo_serial_tty(gpointer user_data)
 /*
  * This function will increase our timer and print the current value to stdout.
  */
- #if 0
 static gboolean
-on_timeout(gpointer data)
+on_timeout(gpointer user_data)
 {
-    guint *timer = (guint*) data;
+    int fd = *((int *) user_data); 
 
-    (*timer)++; /* increase the timer */
-
-    g_message("%s() [%s:%d] - this app has been running for %d secs.",
-                        __FUNCTION__, __FILE__, __LINE__, *timer);
-    //write_serial_tty();
+    lily_read_humidity_data(fd);
 
     return TRUE; /* FALSE removes the event source */
 }
-#endif
 
 /*
  * This function will be called when our CGI is accessed.
@@ -246,8 +288,9 @@ main(void)
     configure_serial_tty(fd);
 
     /* Periodically call 'on_timeout()' every second */
-    g_idle_add(echo_serial_tty, &fd);
-    //g_timeout_add(1000, on_timeout, &timer);
+    //lily_read_humidity_data(fd);
+    //g_idle_add(echo_serial_tty, &fd);
+    g_timeout_add(2000, on_timeout, &fd);
 
     //echo_serial_tty();
     /* start the main loop */
@@ -260,4 +303,3 @@ main(void)
 
     return 0;
 }
-
