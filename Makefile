@@ -3,7 +3,7 @@ include $(AXIS_TOP_DIR)/tools/build/rules/common.mak
 
 
 PROG1	= rs232
-OBJS1	= rs232.c
+OBJS1	= rs232.c modbus.c
 
 PROGS	= $(PROG1)
 

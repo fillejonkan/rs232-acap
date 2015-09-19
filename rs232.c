@@ -19,9 +19,11 @@
 #include <fcntl.h>
 
 #include <statuscache.h>
+#include "modbus.h"
 
 #define OVERLAY_BUF_SIZE (32)
 #define OVERLAY_STR_SIZE (OVERLAY_BUF_SIZE -1)
+#define READ_RETRIES (10)
 
 /*********************** INTERNAL FUNCTION DECLARATIONS ***********************/
 
@@ -40,12 +42,6 @@ static int open_serial_tty();
  * Configure serial TTY port using termios API.
  */
 static void configure_serial_tty(int fd);
-
-/*
- * Read from serial port (max OVERLAY_STR_SIZE char)
- * and output to dynamic overlay
- */
-static gboolean echo_serial_tty(gpointer user_data);
 
 /*
  *
@@ -69,12 +65,12 @@ static void update_dynamic_overlay(char *s)
         g_message("Overlay string to large %d > %d", strlen(s),
             OVERLAY_STR_SIZE);
         return;
-    } 
+    }
 
     /* Ignore return value if group is already created */
     sc_create_group("DYNAMIC_TEXT_IS1", 512, 0);
 
-    struct sc_param sc_par = { .name="DYNAMIC_TEXT", 
+    struct sc_param sc_par = { .name="DYNAMIC_TEXT",
                                .size=OVERLAY_BUF_SIZE,
                                .data=s,
                                .type=SC_STRING};
@@ -139,7 +135,9 @@ static void configure_serial_tty(int fd)
 
 static float lily_read_humidity_data(int fd)
 {
-    unsigned char cmd_buf[8];
+    unsigned char cmd_buf[8] = {0,};
+
+    static unsigned int n_reads = 0;
 
     /* Fill command buffer according to data sheet */
     cmd_buf[0] = 0x11;
@@ -148,14 +146,9 @@ static float lily_read_humidity_data(int fd)
     cmd_buf[3] = 0x00;
     cmd_buf[4] = 0x00;
     cmd_buf[5] = 0x01;
-    cmd_buf[6] = 0x33;
-    cmd_buf[7] = 0x5A;
 
-    int n = write(fd, cmd_buf, sizeof(cmd_buf));
-    if (n < 0)
-        fputs("write() of 8 bytes failed!\n", stderr);
-    else {
-        g_message("Successfully wrote %d characters", n);
+    if (modbus_write_message(fd, cmd_buf, sizeof(cmd_buf))) {
+        return 0;
     }
 
     /* Now read the response */
@@ -164,7 +157,8 @@ static float lily_read_humidity_data(int fd)
 
     /* 7 according to data sheet but seems like device ID is not output */
 
-    while (tot_read < 6) {
+    int retries = READ_RETRIES;
+    while (tot_read < 6 && retries--) {
         int r = read(fd, &resp_buf[tot_read], 7 - tot_read);
         if (r > 0) {
             tot_read += r;
@@ -172,52 +166,24 @@ static float lily_read_humidity_data(int fd)
         }
     }
 
-    g_message("Got bytes 0=0x%02x 1=0x%02x 2=0x%02x, 3=0x%02x 4=0x%02x 5=0x%02x", resp_buf[0], resp_buf[1],resp_buf[2],resp_buf[3],resp_buf[4],resp_buf[5]);
+    if (retries > 0) {
+        g_message("Got bytes 0=0x%02x 1=0x%02x 2=0x%02x, 3=0x%02x 4=0x%02x 5=0x%02x",
+            resp_buf[0], resp_buf[1],resp_buf[2],resp_buf[3],
+            resp_buf[4],resp_buf[5]);
 
-    unsigned int humidity = (resp_buf[2] << 8) | resp_buf[3];
-    float hum_f = humidity / 10.0;
-    g_message("Got humidity 0x%04x=%2.1f%%", humidity, hum_f);
+        unsigned int humidity = (resp_buf[2] << 8) | resp_buf[3];
+        float hum_f = humidity / 10.0;
+        g_message("[%d] Got humidity 0x%04x=%2.1f%%", n_reads % 10, humidity, hum_f);
 
-    /* Finally update the dynamic overlay with the humidity data */
-    char str[6];
-    g_snprintf(str, sizeof(str), "%2.1f%%", hum_f);
-    update_dynamic_overlay(str);
+        /* Finally update the dynamic overlay with the humidity data */
+        char str[32];
+        g_snprintf(str, sizeof(str), "[%d] %2.1f%%", (n_reads++) % 10, hum_f);
+        update_dynamic_overlay(str);
+    } else {
+        g_message("Timed out waiting for response (%d retries)", READ_RETRIES);
+    }
 
     return 0;
-}
-
-static gboolean echo_serial_tty(gpointer user_data)
-{
-    int tot_read = 0;
-    int stop = 0;
-    char buf[OVERLAY_BUF_SIZE];
-    int fd = *((int *) user_data);
-
-    /* Read lines or input characters from tty and print */
-    g_message("Wating for serial input (fd=%d)", fd);
-    
-    /* reset state and ensure zero termination */
-    memset(buf, 0, sizeof(buf));
-    tot_read = 0;
-    stop = 0;
-
-    while (tot_read < (OVERLAY_STR_SIZE) && !stop) {
-        int r = read(fd, &buf[tot_read], OVERLAY_STR_SIZE - tot_read);
-        if (r > 0) {
-            tot_read += r;
-            g_message("read %d (%d) chars", r, tot_read);
-        }
-        /* Stop on new line from echo */
-        if (strstr(buf, "\n") != NULL) {
-            stop = 1;
-            /* replace newline with zero termination */
-            buf[tot_read - 1] = '\0';
-        }
-    }
-    g_message("Got serial string: %s", buf);
-        update_dynamic_overlay(buf);
-
-    return TRUE;
 }
 
 /*
@@ -226,7 +192,7 @@ static gboolean echo_serial_tty(gpointer user_data)
 static gboolean
 on_timeout(gpointer user_data)
 {
-    int fd = *((int *) user_data); 
+    int fd = *((int *) user_data);
 
     lily_read_humidity_data(fd);
 
@@ -280,7 +246,7 @@ main(void)
     loop    = g_main_loop_new(NULL, FALSE);
     handler = ax_http_handler_new(request_handler, &timer);
 
-    g_message("Created a HTTP handler: %p", handler); 
+    g_message("Created a HTTP handler: %p", handler);
 
     //update_dynamic_overlay("Initial");
 
@@ -288,11 +254,8 @@ main(void)
     configure_serial_tty(fd);
 
     /* Periodically call 'on_timeout()' every second */
-    //lily_read_humidity_data(fd);
-    //g_idle_add(echo_serial_tty, &fd);
     g_timeout_add(2000, on_timeout, &fd);
 
-    //echo_serial_tty();
     /* start the main loop */
     g_main_loop_run(loop);
 
