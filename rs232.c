@@ -21,9 +21,9 @@
 #include <statuscache.h>
 #include "modbus.h"
 
-#define OVERLAY_BUF_SIZE (32)
+#define OVERLAY_BUF_SIZE (64)
 #define OVERLAY_STR_SIZE (OVERLAY_BUF_SIZE -1)
-#define READ_RETRIES (10)
+
 
 /*********************** INTERNAL FUNCTION DECLARATIONS ***********************/
 
@@ -34,20 +34,10 @@
 static void update_dynamic_overlay(char *s);
 
 /*
- * Open serial TTY port
- */
-static int open_serial_tty();
-
-/*
- * Configure serial TTY port using termios API.
- */
-static void configure_serial_tty(int fd);
-
-/*
  *
  * Read humidity data from lily temperature sensor using MODBUS protocol.
  */
-static float lily_read_humidity_data(int fd);
+static float lily_read_humidity_data(struct modbus *modbus);
 
 /*
  *
@@ -81,106 +71,40 @@ static void update_dynamic_overlay(char *s)
     sc_set_group("DYNAMIC_TEXT_IS1", arr, SC_CREATE);
 }
 
-/* open serial port for read and write */
-static int open_serial_tty()
+static float lily_read_humidity_data(struct modbus *modbus)
 {
-    int fd = open("/dev/ttyS1", O_RDWR | O_NOCTTY | O_NDELAY);
+    /* Read input register starting at 0 and just the first register */
+    modbus_read_input_registers(modbus, 0, 2);
 
-    if (fd < 0) {
-        perror("failed to open serial port");
-        g_assert(0);
-    } else {
-        g_message("%s() [%s:%d] - Opened serial port fd=%d",
-                        __FUNCTION__, __FILE__, __LINE__, fd);
-    }
-
-    return fd;
-}
-
-/* Configure serial port */
-static void configure_serial_tty(int fd)
-{
-    struct termios ts = {0,};
-
-    if (tcgetattr(fd, &ts)) {
-        perror("Failed to get serial port settings!");
-        g_assert(0);
-    }
-
-    /* Set input and output baud rate to 300, hardcoded for now */
-    cfsetispeed(&ts, B9600);
-    cfsetospeed(&ts, B9600);
-
-    /* Only local ownership of port, allow read and one extra stop bit (2) */
-    ts.c_cflag |= (CLOCAL | CREAD);
-    ts.c_cflag &= ~(CSTOPB | PARENB);
-
-    /* Set 8 bit data size */
-    ts.c_cflag &= ~CSIZE; /* Mask the character size bits */
-    ts.c_cflag |= CS8;    /* Select 8 data bits */
-
-    /* Make raw */
-    ts.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
-
-    /* Raw output, no post processing of data */
-    ts.c_oflag &= ~OPOST;
-
-    /* Physically commit changes to serial port immediately */
-    if (tcsetattr(fd, TCSANOW, &ts)) {
-        perror("Failed to configure TTY terminal");
-        g_assert(0);
-    }
-}
-
-
-static float lily_read_humidity_data(int fd)
-{
-    unsigned char cmd_buf[8] = {0,};
+    /* Wait for device to process data */
+    usleep(100000);
 
     static unsigned int n_reads = 0;
 
-    /* Fill command buffer according to data sheet */
-    cmd_buf[0] = 0x11;
-    cmd_buf[1] = 0x04;
-    cmd_buf[2] = 0x00;
-    cmd_buf[3] = 0x00;
-    cmd_buf[4] = 0x00;
-    cmd_buf[5] = 0x01;
+    size_t nregs;
+    uint16_t *regs = modbus_parse_input_registers(modbus, &nregs);
 
-    if (modbus_write_message(fd, cmd_buf, sizeof(cmd_buf))) {
-        return 0;
-    }
-
-    /* Now read the response */
-    int tot_read = 0;
-    unsigned char resp_buf[6] = {0,};
-
-    /* 7 according to data sheet but seems like device ID is not output */
-
-    int retries = READ_RETRIES;
-    while (tot_read < 6 && retries--) {
-        int r = read(fd, &resp_buf[tot_read], 7 - tot_read);
-        if (r > 0) {
-            tot_read += r;
-            g_message("read %d (%d) chars", r, tot_read);
-        }
-    }
-
-    if (retries > 0) {
-        g_message("Got bytes 0=0x%02x 1=0x%02x 2=0x%02x, 3=0x%02x 4=0x%02x 5=0x%02x",
-            resp_buf[0], resp_buf[1],resp_buf[2],resp_buf[3],
-            resp_buf[4],resp_buf[5]);
-
-        unsigned int humidity = (resp_buf[2] << 8) | resp_buf[3];
+    if (regs) {
+        uint16_t humidity = regs[0];
         float hum_f = humidity / 10.0;
-        g_message("[%d] Got humidity 0x%04x=%2.1f%%", n_reads % 10, humidity, hum_f);
+        g_message("[%d] Got humidity 0x%04x=%2.1f%%", n_reads % 10, humidity,
+            hum_f);
 
         /* Finally update the dynamic overlay with the humidity data */
-        char str[32];
-        g_snprintf(str, sizeof(str), "[%d] %2.1f%%", (n_reads++) % 10, hum_f);
+        char str[OVERLAY_BUF_SIZE];
+        g_snprintf(str, sizeof(str), "[%d] H=%2.1f%%", (++n_reads) % 10, hum_f);
+
+        if (nregs > 1) {
+            uint16_t temperature = regs[1];
+            float temp_f = temperature / 10.0;
+            g_message("[%d] Got temperature 0x%04x=%2.1fC", n_reads % 10,
+                temperature,
+                temp_f);
+            snprintf(&str[strlen(str)], sizeof(str), " T=%2.1fC", temp_f);
+        }
+
         update_dynamic_overlay(str);
-    } else {
-        g_message("Timed out waiting for response (%d retries)", READ_RETRIES);
+        g_free(regs);
     }
 
     return 0;
@@ -192,11 +116,14 @@ static float lily_read_humidity_data(int fd)
 static gboolean
 on_timeout(gpointer user_data)
 {
-    int fd = *((int *) user_data);
+    g_assert(user_data);
 
-    lily_read_humidity_data(fd);
+    struct modbus *modbus = user_data;
 
-    return TRUE; /* FALSE removes the event source */
+    lily_read_humidity_data(modbus);
+
+    /* Return FALSE if the event source should be removed */
+    return TRUE;
 }
 
 /*
@@ -248,19 +175,20 @@ main(void)
 
     g_message("Created a HTTP handler: %p", handler);
 
-    //update_dynamic_overlay("Initial");
-
-    int fd = open_serial_tty();
-    configure_serial_tty(fd);
+    struct modbus *modbus = modbus_init_device("/dev/ttyS1",
+                                               0x11,
+                                               PARITY_NONE,
+                                               B9600,
+                                               0 /* No stop bit */);
 
     /* Periodically call 'on_timeout()' every second */
-    g_timeout_add(2000, on_timeout, &fd);
+    g_timeout_add(2000, on_timeout, modbus);
 
     /* start the main loop */
     g_main_loop_run(loop);
 
     /* free up resources */
-    close(fd);
+    modbus_close_device(&modbus);
     g_main_loop_unref(loop);
     ax_http_handler_free(handler);
 
