@@ -37,7 +37,9 @@ static void update_dynamic_overlay(char *s);
  *
  * Read humidity data from lily temperature sensor using MODBUS protocol.
  */
-static float lily_read_humidity_data(struct modbus *modbus);
+static float lily_read_humidity_data(struct modbus **modbus);
+
+static int lily_init_modbus(struct modbus **modbus);
 
 /*
  *
@@ -48,6 +50,25 @@ on_timeout(gpointer user_data);
 
 
 /*********************** INTERNAL FUNCTION DEFINITIONS ************************/
+
+static int lily_init_modbus(struct modbus **modbus)
+{
+    g_assert(modbus);
+
+    if (*modbus) {
+        modbus_close_device(modbus);
+    }
+
+    g_message("------------REINIT SERIAL PORT------------------------");
+
+    *modbus = modbus_init_device("/dev/ttyS1",
+                                 0x11,
+                                 PARITY_NONE,
+                                 B9600,
+                                 0 /* No stop bit */);
+
+    return 0;
+}
 
 static void update_dynamic_overlay(char *s)
 {
@@ -71,23 +92,29 @@ static void update_dynamic_overlay(char *s)
     sc_set_group("DYNAMIC_TEXT_IS1", arr, SC_CREATE);
 }
 
-static float lily_read_humidity_data(struct modbus *modbus)
+static float lily_read_humidity_data(struct modbus **modbus)
 {
+    g_assert(modbus);
+    g_assert(*modbus);
+
+    struct modbus *m = *modbus;
     /* Read input register starting at 0 and just the first register */
-    modbus_read_input_registers(modbus, 0, 2);
+    modbus_read_input_registers(m, 0, 2);
 
     /* Wait for device to process data */
-    usleep(100000);
+    usleep(50000);
 
-    static unsigned int n_reads = 0;
+    static unsigned int n_reads    = 0;
+    static unsigned int n_failures = 0;
 
     size_t nregs;
-    uint16_t *regs = modbus_parse_input_registers(modbus, &nregs);
+    uint16_t *regs = modbus_parse_input_registers(m, &nregs);
 
     if (regs) {
         uint16_t humidity = regs[0];
         float hum_f = humidity / 10.0;
-        g_message("[%d] Got humidity 0x%04x=%2.1f%%", n_reads % 10, humidity,
+        g_message("[%d, %d] Got humidity 0x%04x=%2.1f%%",
+            n_reads % 10, n_failures % 5, humidity,
             hum_f);
 
         /* Finally update the dynamic overlay with the humidity data */
@@ -105,6 +132,12 @@ static float lily_read_humidity_data(struct modbus *modbus)
 
         update_dynamic_overlay(str);
         g_free(regs);
+    } else {
+        n_failures++;
+        /* Re-init serial port in case something went wrong */
+        if (n_failures && n_failures % 5) {
+            lily_init_modbus(modbus);
+        }
     }
 
     return 0;
@@ -118,7 +151,7 @@ on_timeout(gpointer user_data)
 {
     g_assert(user_data);
 
-    struct modbus *modbus = user_data;
+    struct modbus **modbus = user_data;
 
     lily_read_humidity_data(modbus);
 
@@ -175,14 +208,12 @@ main(void)
 
     g_message("Created a HTTP handler: %p", handler);
 
-    struct modbus *modbus = modbus_init_device("/dev/ttyS1",
-                                               0x11,
-                                               PARITY_NONE,
-                                               B9600,
-                                               0 /* No stop bit */);
+    struct modbus *modbus = NULL;
+
+    lily_init_modbus(&modbus);
 
     /* Periodically call 'on_timeout()' every second */
-    g_timeout_add(2000, on_timeout, modbus);
+    g_timeout_add(2000, on_timeout, &modbus);
 
     /* start the main loop */
     g_main_loop_run(loop);

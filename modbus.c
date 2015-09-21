@@ -85,7 +85,8 @@ uint16_t *modbus_parse_input_registers(struct modbus *modbus, size_t *n)
 
 
     switch (function_code) {
-        case 0x04:
+        case 0x03: /* holding register */
+        case 0x04: /* input register */
             nregs = resp_buf[2] / 2;
             *n = nregs;
             regs = g_new0(uint16_t, nregs);
@@ -119,6 +120,8 @@ unsigned char *modbus_eat_buffer(struct modbus *modbus)
         if (r > 0) {
             tot_read += r;
             g_message("read %d (%d) chars", r, tot_read);
+        } else {
+            usleep(1000);
         }
     }
 
