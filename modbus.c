@@ -189,7 +189,7 @@ int modbus_read_input_registers(struct modbus *modbus,
     unsigned char cmd_buf[8] = {0,};
 
     cmd_buf[0] = modbus->device_address;
-    cmd_buf[1] = 0x04; /* Function code for input register */
+    cmd_buf[1] = 0x03; /* Function code for input register */
 
     cmd_buf[2] = (start >> 8) & 0xFF;
     cmd_buf[3] = start & 0xFF;
@@ -315,6 +315,13 @@ int modbus_write_message(int fd, unsigned char *msg, size_t size)
 
     /* Send the command down the line */
     int n = write(fd, msg, size);
+
+    int i = 0;
+    for (; i < size; i++) {
+        printf("%d = 0x%02x, ", i, msg[i]);
+    }
+    printf("\n");
+
     if (n < 0) {
         g_message("write() of %d bytes failed! %s\n", size, strerror(errno));
         return -1;

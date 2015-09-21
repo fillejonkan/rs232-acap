@@ -62,8 +62,8 @@ static int lily_init_modbus(struct modbus **modbus)
     g_message("------------REINIT SERIAL PORT------------------------");
 
     *modbus = modbus_init_device("/dev/ttyS1",
-                                 0x11,
-                                 PARITY_NONE,
+                                 0x01,
+                                 PARITY_EVEN,
                                  B9600,
                                  0 /* No stop bit */);
 
@@ -99,35 +99,50 @@ static float lily_read_humidity_data(struct modbus **modbus)
 
     struct modbus *m = *modbus;
     /* Read input register starting at 0 and just the first register */
-    modbus_read_input_registers(m, 0, 2);
+    modbus_read_input_registers(m, 10, 2);
 
     /* Wait for device to process data */
     usleep(50000);
 
     static unsigned int n_reads    = 0;
     static unsigned int n_failures = 0;
+    uint16_t reg1;
+    uint16_t reg2;
 
     size_t nregs;
     uint16_t *regs = modbus_parse_input_registers(m, &nregs);
 
     if (regs) {
-        uint16_t humidity = regs[0];
-        float hum_f = humidity / 10.0;
-        g_message("[%d, %d] Got humidity 0x%04x=%2.1f%%",
-            n_reads % 10, n_failures % 5, humidity,
-            hum_f);
+        reg1 = regs[0];
+        g_message("[%d, %d] Got Reg1 0x%04x",
+            n_reads % 10, n_failures % 5, reg1);
+
+        int bit1 = (reg1 & 0x01) != 0;
+        int bit2 = (reg1 & (0x01 << 1)) != 0;
+        int bit3 = (reg1 & (0x01 << 2)) != 0;
+        int bit4 = (reg1 & (0x01 << 3)) != 0;
 
         /* Finally update the dynamic overlay with the humidity data */
         char str[OVERLAY_BUF_SIZE];
-        g_snprintf(str, sizeof(str), "[%d] H=%2.1f%%", (++n_reads) % 10, hum_f);
+        g_snprintf(str, sizeof(str), "[%d] REG1-bits: %d%d%d%d", (++n_reads) % 10, bit1, bit2, bit3, bit4);
 
         if (nregs > 1) {
-            uint16_t temperature = regs[1];
-            float temp_f = temperature / 10.0;
-            g_message("[%d] Got temperature 0x%04x=%2.1fC", n_reads % 10,
-                temperature,
-                temp_f);
-            snprintf(&str[strlen(str)], sizeof(str), " T=%2.1fC", temp_f);
+            reg2 = regs[1];
+            g_message("[%d] Got Reg2 0x%04x", n_reads % 10,
+                reg2);
+            
+            bit1 = (reg2 & 0x01) != 0;
+            bit2 = (reg2 & (0x01 << 1)) != 0;
+            bit3 = (reg2 & (0x01 << 2)) != 0;
+            bit4 = (reg2 & (0x01 << 3)) != 0;
+            int bit5 = (reg2 & (0x01 << 4)) != 0;
+            int bit6 = (reg2 & (0x01 << 5)) != 0;
+            int bit7 = (reg2 & (0x01 << 6)) != 0;
+            int bit8 = (reg2 & (0x01 << 7)) != 0;
+
+
+            snprintf(&str[strlen(str)], sizeof(str), " REG2-bits: %d%d%d%d%d%d%d%d",
+                bit1, bit2, bit3, bit4, bit5, bit6, bit7, bit8);
         }
 
         update_dynamic_overlay(str);
@@ -213,7 +228,7 @@ main(void)
     lily_init_modbus(&modbus);
 
     /* Periodically call 'on_timeout()' every second */
-    g_timeout_add(2000, on_timeout, &modbus);
+    g_timeout_add(500, on_timeout, &modbus);
 
     /* start the main loop */
     g_main_loop_run(loop);
