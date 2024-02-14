@@ -1,0 +1,31 @@
+{
+    "schemaVersion": "1.0",
+    "acapPackageConf": {
+        "setup": {
+            "friendlyName": "rs232",
+            "architecture": "mipsisa32r2el",
+            "appName": "rs232",
+            "vendor": "Axis Communications",
+            "embeddedSdkVersion": "2.0",
+            "user": {
+                "group": "sdk",
+                "username": "sdk"
+            },
+            "vendorUrl": "\\'''\\",
+            "runMode": "never",
+            "version": "1.0.0"
+        },
+        "copyProtection": {
+            "method": "none"
+        },
+        "configuration": {
+            "httpConfig": [
+                {
+                    "access": "viewer",
+                    "name": "example.cgi",
+                    "type": "transferCgi"
+                }
+            ]
+        }
+    }
+}
